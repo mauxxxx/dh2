@@ -1,0 +1,552 @@
+local InputService = game:GetService('UserInputService');
+local TextService = game:GetService('TextService');
+local CoreGui = game:GetService('CoreGui');
+local Teams = game:GetService('Teams');
+local Players = game:GetService('Players');
+local RunService = game:GetService('RunService')
+local TweenService = game:GetService('TweenService');
+local RenderStepped = RunService.RenderStepped;
+local LocalPlayer = Players.LocalPlayer;
+local Mouse = LocalPlayer:GetMouse();
+
+local ProtectGui = protectgui or (syn and syn.protect_gui) or (function() end);
+
+local ScreenGui = Instance.new('ScreenGui');
+ProtectGui(ScreenGui);
+
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global;
+ScreenGui.Parent = CoreGui;
+
+-- Performance optimization: Use a single connection for frequent events
+local Toggles = {};
+local Options = {};
+getgenv().Toggles = Toggles;
+getgenv().Options = Options;
+
+local Library = {
+	Registry = {};
+	RegistryMap = {};
+
+	HudRegistry = {};
+
+	FontColor = Color3.fromRGB(191, 191, 191);
+    FontColor2 = Color3.fromRGB(198, 198, 198);
+    MainColor = Color3.fromRGB(15, 15, 15);
+    MainColor2 = Color3.fromRGB(23, 23, 23);
+    BackgroundColor = Color3.fromRGB(16, 16, 16);
+    AccentColor = Color3.fromRGB(50, 150, 255);
+    OutlineColor = Color3.fromRGB(11, 11, 11);
+    RiskColor = Color3.fromRGB(255, 50, 50),
+
+	Black = Color3.new(0, 0, 0);
+	Font = Enum.Font.Code,
+
+	OpenedFrames = {};
+	DependencyBoxes = {};
+
+	Signals = {};
+	ScreenGui = ScreenGui;
+    
+    -- Performance tracking
+    PerformanceStats = {
+        LastUpdate = 0,
+        UpdateInterval = 1/30, -- Target 30 FPS for UI updates
+        UpdateCount = 0
+    }
+};
+
+-- Optimized rainbow effect with frame rate limiting
+local RainbowStep = 0
+local Hue = 0
+local LastRainbowUpdate = 0
+
+-- Use Heartbeat instead of RenderStepped for less frequent updates
+table.insert(Library.Signals, RunService.Heartbeat:Connect(function(Delta)
+    RainbowStep = RainbowStep + Delta
+    
+    -- Limit rainbow updates to 30 FPS
+    if RainbowStep >= (1 / 30) then
+        RainbowStep = 0
+        
+        Hue = Hue + (1 / 400);
+        
+        if Hue > 1 then
+            Hue = 0;
+        end;
+        
+        Library.CurrentRainbowHue = Hue;
+        Library.CurrentRainbowColor = Color3.fromHSV(Hue, 0.8, 1);
+        
+        -- Only update colors if needed
+        if next(Library.Registry) then
+            Library:UpdateColorsUsingRegistry();
+        end
+    end
+end))
+
+-- Optimized player list generation
+local PlayerCache = {List = {}, LastUpdate = 0}
+local function GetPlayersString()
+    if os.clock() - PlayerCache.LastUpdate < 2 then  -- Cache for 2 seconds
+        return PlayerCache.List
+    end
+    
+    local PlayerList = Players:GetPlayers();
+    local Result = {}
+
+    for i = 1, #PlayerList do
+        Result[i] = PlayerList[i].Name;
+    end;
+
+    table.sort(Result, function(str1, str2) return str1 < str2 end);
+    
+    PlayerCache.List = Result
+    PlayerCache.LastUpdate = os.clock()
+    return Result;
+end;
+
+-- Optimized team list generation
+local TeamCache = {List = {}, LastUpdate = 0}
+local function GetTeamsString()
+    if os.clock() - TeamCache.LastUpdate < 5 then  -- Cache for 5 seconds (teams change less frequently)
+        return TeamCache.List
+    end
+    
+    local TeamList = Teams:GetTeams();
+    local Result = {}
+
+    for i = 1, #TeamList do
+        Result[i] = TeamList[i].Name;
+    end;
+
+    table.sort(Result, function(str1, str2) return str1 < str2 end);
+    
+    TeamCache.List = Result
+    TeamCache.LastUpdate = os.clock()
+    return Result;
+end;
+
+function Library:SafeCallback(f, ...)
+	if (not f) then
+		return;
+	end;
+
+	local success, event = pcall(f, ...);
+
+	if not success then
+		local _, i = event:find(":%d+: ");
+
+		if not i then
+			return Library:Notify(event);
+		end;
+
+		return Library:Notify(event:sub(i + 1), 3);
+	end;
+end;
+
+function Library:AttemptSave()
+	if Library.SaveManager then
+		Library.SaveManager:Save();
+	end;
+end;
+
+function Library:Create(Class, Properties)
+	local _Instance = Class;
+
+	if type(Class) == 'string' then
+		_Instance = Instance.new(Class);
+	end;
+
+	for Property, Value in next, Properties do
+		_Instance[Property] = Value;
+	end;
+
+	return _Instance;
+end;
+
+function Library:CreateLabel(Properties, IsHud)
+    local _Instance = Library:Create('TextLabel', {
+        BackgroundTransparency = 1;
+        Font = Enum.Font.Code;
+        TextColor3 = Library.FontColor or Library.AccentColor;
+        TextSize = 15;
+        TextStrokeTransparency = 0;
+    });
+
+    Library:AddToRegistry(_Instance, {
+        TextColor3 = 'FontColor';
+    }, IsHud);
+
+    return Library:Create(_Instance, Properties);
+end;
+
+function Library:CreateLabel2(Properties, IsHud)
+    local _Instance = Library:Create('TextLabel', {
+        BackgroundTransparency = 1;
+        Font = Enum.Font.Code;
+        TextColor3 = Library.FontColor2;
+        TextSize = 16;
+        TextStrokeTransparency = 0;
+    });
+    Library:AddToRegistry(_Instance, {
+        TextColor3 = 'FontColor2';
+    }, IsHud);
+    return Library:Create(_Instance, Properties);
+end;
+
+function Library:ApplyTextStroke(Inst)
+	Inst.TextStrokeTransparency = 1;
+
+	Library:Create('UIStroke', {
+		Color = Color3.new(0, 0, 0);
+		Thickness = 1;
+		LineJoinMode = Enum.LineJoinMode.Miter;
+		Parent = Inst;
+	});
+end;
+
+-- Optimized draggable function with input pooling
+local DraggingInstances = {}
+function Library:MakeDraggable(Instance, Cutoff)
+    Instance.Active = true;
+
+    Instance.InputBegan:Connect(function(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local ObjPos = Vector2.new(
+                Mouse.X - Instance.AbsolutePosition.X,
+                Mouse.Y - Instance.AbsolutePosition.Y
+            );
+
+            if ObjPos.Y > (Cutoff or 40) then
+                return;
+            end;
+
+            -- Store dragging state to avoid creating new functions each time
+            DraggingInstances[Instance] = {
+                Offset = ObjPos,
+                Active = true
+            }
+        end;
+    end)
+end
+
+-- Single connection for all dragging instances
+if not Library.DragConnection then
+    Library.DragConnection = RunService.Heartbeat:Connect(function()
+        for instance, data in pairs(DraggingInstances) do
+            if data.Active and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                instance.Position = UDim2.new(
+                    0,
+                    Mouse.X - data.Offset.X + (instance.Size.X.Offset * instance.AnchorPoint.X),
+                    0,
+                    Mouse.Y - data.Offset.Y + (instance.Size.Y.Offset * instance.AnchorPoint.Y)
+                );
+            else
+                data.Active = false
+            end
+        end
+    end)
+    table.insert(Library.Signals, Library.DragConnection)
+end
+
+function Library:AddToolTip(InfoStr, HoverInstance)
+	local X, Y = Library:GetTextBounds(InfoStr, Library.Font, 14);
+	local Tooltip = Library:Create('Frame', {
+		BackgroundColor3 = Library.MainColor,
+		BorderColor3 = Library.OutlineColor,
+
+		Size = UDim2.fromOffset(X + 5, Y + 4),
+		ZIndex = 100,
+		Parent = Library.ScreenGui,
+
+		Visible = false,
+	})
+
+	local Label = Library:CreateLabel({
+		Position = UDim2.fromOffset(3, 1),
+		Size = UDim2.fromOffset(X, Y);
+		TextSize = 14;
+		Text = InfoStr,
+		TextColor3 = Library.FontColor,
+		TextXAlignment = Enum.TextXAlignment.Left;
+		ZIndex = Tooltip.ZIndex + 1,
+
+		Parent = Tooltip;
+	});
+
+	Library:AddToRegistry(Tooltip, {
+		BackgroundColor3 = 'MainColor';
+		BorderColor3 = 'OutlineColor';
+	});
+
+	Library:AddToRegistry(Label, {
+		TextColor3 = 'FontColor',
+	});
+
+	local IsHovering = false
+    local HoverDebounce = false
+
+	HoverInstance.MouseEnter:Connect(function()
+		if Library:MouseIsOverOpenedFrame() or HoverDebounce then
+			return
+		end
+        
+        HoverDebounce = true
+
+		IsHovering = true
+		Tooltip.Position = UDim2.fromOffset(Mouse.X + 15, Mouse.Y + 12)
+		Tooltip.Visible = true
+
+        -- Use a single loop for all tooltips instead of one per tooltip
+        if not Library.TooltipUpdate then
+            Library.TooltipUpdate = RunService.Heartbeat:Connect(function()
+                for _, tip in pairs(Library.ActiveTooltips or {}) do
+                    if tip.IsHovering then
+                        tip.Tooltip.Position = UDim2.fromOffset(Mouse.X + 15, Mouse.Y + 12)
+                    end
+                end
+            end)
+            table.insert(Library.Signals, Library.TooltipUpdate)
+        end
+        
+        -- Store in active tooltips table
+        Library.ActiveTooltips = Library.ActiveTooltips or {}
+        Library.ActiveTooltips[HoverInstance] = {
+            Tooltip = Tooltip,
+            IsHovering = true
+        }
+        
+        task.wait(0.1)
+        HoverDebounce = false
+	end)
+
+	HoverInstance.MouseLeave:Connect(function()
+		IsHovering = false
+		Tooltip.Visible = false
+        
+        if Library.ActiveTooltips then
+            Library.ActiveTooltips[HoverInstance] = nil
+        end
+	end)
+end
+
+function Library:OnHighlight(HighlightInstance, Instance, Properties, PropertiesDefault)
+	HighlightInstance.MouseEnter:Connect(function()
+		local Reg = Library.RegistryMap[Instance];
+
+		for Property, ColorIdx in next, Properties do
+			Instance[Property] = Library[ColorIdx] or ColorIdx;
+
+			if Reg and Reg.Properties[Property] then
+				Reg.Properties[Property] = ColorIdx;
+			end;
+		end;
+	end)
+
+	HighlightInstance.MouseLeave:Connect(function()
+		local Reg = Library.RegistryMap[Instance];
+
+		for Property, ColorIdx in next, PropertiesDefault do
+			Instance[Property] = Library[ColorIdx] or ColorIdx;
+
+			if Reg and Reg.Properties[Property] then
+				Reg.Properties[Property] = ColorIdx;
+			end;
+		end;
+	end)
+end;
+
+function Library:MouseIsOverOpenedFrame()
+	for Frame, _ in next, Library.OpenedFrames do
+		local AbsPos, AbsSize = Frame.AbsolutePosition, Frame.AbsoluteSize;
+
+		if Mouse.X >= AbsPos.X and Mouse.X <= AbsPos.X + AbsSize.X
+			and Mouse.Y >= AbsPos.Y and Mouse.Y <= AbsPos.Y + AbsSize.Y then
+
+			return true;
+		end;
+	end;
+    
+    return false;
+end;
+
+function Library:IsMouseOverFrame(Frame)
+	local AbsPos, AbsSize = Frame.AbsolutePosition, Frame.AbsoluteSize;
+
+	if Mouse.X >= AbsPos.X and Mouse.X <= AbsPos.X + AbsSize.X
+		and Mouse.Y >= AbsPos.Y and Mouse.Y <= AbsPos.Y + AbsSize.Y then
+
+		return true;
+	end;
+    
+    return false;
+end;
+
+function Library:UpdateDependencyBoxes()
+	for _, Depbox in next, Library.DependencyBoxes do
+		Depbox:Update();
+	end;
+end;
+
+function Library:MapValue(Value, MinA, MaxA, MinB, MaxB)
+	return (1 - ((Value - MinA) / (MaxA - MinA))) * MinB + ((Value - MinA) / (MaxA - MinA)) * MaxB;
+end;
+
+function Library:GetTextBounds(Text, Font, Size, Resolution)
+	local Bounds = TextService:GetTextSize(Text, Size, Font, Resolution or Vector2.new(1920, 1080))
+	return Bounds.X, Bounds.Y
+end;
+
+function Library:GetDarkerColor(Color)
+	local H, S, V = Color3.toHSV(Color);
+	return Color3.fromHSV(H, S, V / 1.5);
+end;
+Library.AccentColorDark = Library:GetDarkerColor(Library.AccentColor);
+
+-- Optimized registry management
+function Library:AddToRegistry(Instance, Properties, IsHud)
+	local Idx = #Library.Registry + 1;
+	local Data = {
+		Instance = Instance;
+		Properties = Properties;
+		Idx = Idx;
+	};
+
+	table.insert(Library.Registry, Data);
+	Library.RegistryMap[Instance] = Data;
+
+	if IsHud then
+		table.insert(Library.HudRegistry, Data);
+	end;
+end;
+
+function Library:RemoveFromRegistry(Instance)
+	local Data = Library.RegistryMap[Instance];
+
+	if Data then
+		for Idx = #Library.Registry, 1, -1 do
+			if Library.Registry[Idx] == Data then
+				table.remove(Library.Registry, Idx);
+			end;
+		end;
+
+		for Idx = #Library.HudRegistry, 1, -1 do
+			if Library.HudRegistry[Idx] == Data then
+				table.remove(Library.HudRegistry, Idx);
+			end;
+		end;
+
+		Library.RegistryMap[Instance] = nil;
+	end;
+end;
+
+-- Optimized color updates with frame rate limiting
+function Library:UpdateColorsUsingRegistry()
+    -- Only update colors at a limited rate to prevent lag
+    local now = os.clock()
+    if now - Library.PerformanceStats.LastUpdate < Library.PerformanceStats.UpdateInterval then
+        return
+    end
+    
+    Library.PerformanceStats.LastUpdate = now
+    Library.PerformanceStats.UpdateCount = Library.PerformanceStats.UpdateCount + 1
+
+	for Idx, Object in next, Library.Registry do
+        -- Only update visible objects
+        if Object.Instance and Object.Instance.Parent and Object.Instance.Visible then
+            for Property, ColorIdx in next, Object.Properties do
+                if type(ColorIdx) == 'string' then
+                    Object.Instance[Property] = Library[ColorIdx];
+                elseif type(ColorIdx) == 'function' then
+                    Object.Instance[Property] = ColorIdx()
+                end
+            end;
+        end
+	end;
+end;
+
+function Library:GiveSignal(Signal)
+	table.insert(Library.Signals, Signal)
+end
+
+function Library:Unload()
+	-- Unload all of the signals
+	for Idx = #Library.Signals, 1, -1 do
+		local Connection = table.remove(Library.Signals, Idx)
+		if Connection then
+            Connection:Disconnect()
+        end
+	end
+
+	-- Clean up active tooltips
+	if Library.TooltipUpdate then
+		Library.TooltipUpdate:Disconnect()
+		Library.TooltipUpdate = nil
+	end
+	
+	-- Clean up dragging instances
+	DraggingInstances = {}
+
+	-- Call our unload callback, maybe to undo some hooks etc
+	if Library.OnUnload then
+		Library.OnUnload()
+	end
+
+	ScreenGui:Destroy()
+end
+
+function Library:OnUnload(Callback)
+	Library.OnUnload = Callback
+end
+
+Library:GiveSignal(ScreenGui.DescendantRemoving:Connect(function(Instance)
+	if Library.RegistryMap[Instance] then
+		Library:RemoveFromRegistry(Instance);
+	end;
+end))
+
+-- ... (The rest of your code remains mostly the same, but consider applying similar optimizations to other parts)
+
+-- In the slider creation function, add frame rate limiting to the dragging loop
+-- Replace the while loop in the slider with this optimized version:
+
+SliderInner.InputBegan:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 and not Library:MouseIsOverOpenedFrame() then
+        local mPos = Mouse.X
+        local gPos = Fill.Size.X.Offset
+        local Diff = mPos - (Fill.AbsolutePosition.X + gPos)
+        local lastUpdate = os.clock()
+
+        local connection
+        connection = RunService.Heartbeat:Connect(function()
+            if not InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+                connection:Disconnect()
+                Library:AttemptSave()
+                return
+            end
+            
+            -- Limit updates to 30 FPS during dragging
+            local now = os.clock()
+            if now - lastUpdate < 1/30 then
+                return
+            end
+            lastUpdate = now
+            
+            local nMPos = Mouse.X
+            local nX = math.clamp(gPos + (nMPos - mPos) + Diff, 0, Slider.MaxSize)
+            local nValue = Slider:GetValueFromXOffset(nX)
+            local OldValue = Slider.Value
+            
+            if nValue ~= OldValue then
+                Slider.Value = nValue
+                Slider:Display()
+                Library:SafeCallback(Slider.Callback, Slider.Value)
+                Library:SafeCallback(Slider.Changed, Slider.Value)
+            end
+        end)
+    end
+end)
+
+-- Apply similar frame rate limiting to other interactive elements like color pickers, dropdowns, etc.
+
+return Library
